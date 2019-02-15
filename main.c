@@ -1,347 +1,202 @@
-//*****************************************************************************
-//
-// Copyright (C) 2014 Texas Instruments Incorporated - http://www.ti.com/ 
-// 
-// 
-//  Redistribution and use in source and binary forms, with or without 
-//  modification, are permitted provided that the following conditions 
-//  are met:
-//
-//    Redistributions of source code must retain the above copyright 
-//    notice, this list of conditions and the following disclaimer.
-//
-//    Redistributions in binary form must reproduce the above copyright
-//    notice, this list of conditions and the following disclaimer in the 
-//    documentation and/or other materials provided with the   
-//    distribution.
-//
-//    Neither the name of Texas Instruments Incorporated nor the names of
-//    its contributors may be used to endorse or promote products derived
-//    from this software without specific prior written permission.
-//
-//  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS 
-//  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT 
-//  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-//  A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT 
-//  OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, 
-//  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT 
-//  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-//  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-//  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT 
-//  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE 
-//  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-//
-//*****************************************************************************
 
 //*****************************************************************************
 //
-// Application Name     - SPI Demo
-// Application Overview - The demo application focuses on showing the required 
-//                        initialization sequence to enable the CC3200 SPI 
-//                        module in full duplex 4-wire master and slave mode(s).
-// Application Details  -
-// http://processors.wiki.ti.com/index.php/CC32xx_SPI_Demo
-// or
-// docs\examples\CC32xx_SPI_Demo.pdf
+// Application Name     - int_sw
+// Application Overview - The objective of this application is to demonstrate
+//                          GPIO interrupts using SW2 and SW3.
+//                          NOTE: the switches are not debounced!
 //
 //*****************************************************************************
 
-
-//*****************************************************************************
+//****************************************************************************
 //
-//! \addtogroup SPI_Demo
+//! \addtogroup int_sw
 //! @{
 //
-//*****************************************************************************
+//****************************************************************************
 
 // Standard includes
-#include <string.h>
 #include <stdio.h>
+
 // Driverlib includes
 #include "hw_types.h"
+#include "hw_ints.h"
 #include "hw_memmap.h"
 #include "hw_common_reg.h"
-#include "hw_ints.h"
-#include "spi.h"
+#include "interrupt.h"
+#include "hw_apps_rcm.h"
+#include "prcm.h"
 #include "rom.h"
 #include "rom_map.h"
-#include "utils.h"
 #include "prcm.h"
-#include "uart.h"
-#include "interrupt.h"
+#include "gpio.h"
+#include "utils.h"
+#include "timer.h"
+#include "systick.h"
 
 // Common interface includes
 #include "uart_if.h"
-#include "pin_mux_config.h"
-#include "Adafruit_SSD1351.h"
-#include "Adafruit_GFX.h"
-#include "glcdfont.h"
-#define UART_PRINT              Report
-#define APPLICATION_VERSION     "1.1.1"
-//*****************************************************************************
-//
-// Application Master/Slave mode selector macro
-//
-// MASTER_MODE = 1 : Application in master mode
-// MASTER_MODE = 0 : Application in slave mode
-//
-//*****************************************************************************
-#define MASTER_MODE      0
+#include "pinmux.h"
+#include "timer_if.h"
+#include "gpio_if.h"
 
-#define SPI_IF_BIT_RATE  100000
-#define TR_BUFF_SIZE     100
-
-#define MASTER_MSG       "This is CC3200 SPI Master Application\n\r"
-#define SLAVE_MSG        "This is CC3200 SPI Slave Application\n\r"
-
-// Color definitions
-#define BLACK           0x0000
-#define BLUE            0x001F
-#define GREEN           0x07E0
-#define CYAN            0x07FF
-#define RED             0xF800
-#define MAGENTA         0xF81F
-#define YELLOW          0xFFE0
-#define WHITE           0xFFFF
+#define ti2ms(ts) (((double) 1000 / (double) 80000000) * (double)(ts))
+#define Button0 (int)0b1010000000000010000000001000000001001100010011001
+#define Button1 (int)0b1010000000000010000000001000000000000100000001001
+#define Button2 (int)0b1010000000000010000000001000000001000100010001001
+#define Button3 (int)0b1010000000000010000000001000000000100100001001001
+#define Button4 (int)0b1010000000000010000000001000000001100100011001001
+#define Button5 (int)0b1010000000000010000000001000000000010100000101001
+#define Button6 (int)0b1010000000000010000000001000000001010100010101001
+#define Button7 (int)0b1010000000000010000000001000000000110100001101001
+#define Button8 (int)0b1010000000000010000000001000000001110100011101001
+#define Button9 (int)0b1010000000000010000000001000000000001100000011001
+#define LAST (int)0b1010000000000010000000001000000001110110011101101
+#define MUTE (int)0b1010000000000010000000001000000000100110001001101
 
 //*****************************************************************************
 //                 GLOBAL VARIABLES -- Start
 //*****************************************************************************
-static unsigned char g_ucTxBuff[TR_BUFF_SIZE];
-static unsigned char g_ucRxBuff[TR_BUFF_SIZE];
-static unsigned char ucTxBuffNdx;
-static unsigned char ucRxBuffNdx;
-
-#if defined(ccs)
 extern void (* const g_pfnVectors[])(void);
-#endif
-#if defined(ewarm)
-extern uVectorEntry __vector_table;
-#endif
+
+volatile int cmp;
+volatile int i;
+volatile int j;
+volatile unsigned long count;
+volatile unsigned long value;
+volatile unsigned long lastValue;
+volatile unsigned long diff;
+volatile unsigned char confirmFlag;
+volatile unsigned char passFlag;
+volatile unsigned char readFlag;
+volatile unsigned char startTimer;
+static volatile unsigned long g_ulBase;
+volatile char checkList[12][4] = {
+                     {'_'}, //Button 0
+                     {',', '.', '!'}, //Button 1
+                     {'a', 'b', 'c'}, //Button 2
+                     {'d', 'e', 'f'}, //Button 3
+                     {'g', 'h', 'i'}, //Button 4
+                     {'j', 'k', 'l'}, //Button 5
+                     {'m', 'n', 'o'}, //Button 6
+                     {'p', 'q', 'r', 's'}, //Button 7
+                     {'t', 'u', 'v'}, //Button 8
+                     {'w', 'x', 'y', 'z'}, //Button 9
+                     {'DELETE'}, //Button LAST
+                     {'ENTER'}, //Button MUTE
+
+};
+
 //*****************************************************************************
 //                 GLOBAL VARIABLES -- End
 //*****************************************************************************
 
 
+//*****************************************************************************
+//                      LOCAL FUNCTION PROTOTYPES
+//*****************************************************************************
+static void BoardInit(void);
 
 //*****************************************************************************
-//
-//! SPI Slave Interrupt handler
-//!
-//! This function is invoked when SPI slave has its receive register full or
-//! transmit register empty.
-//!
-//! \return None.
-//
+//                      LOCAL FUNCTION DEFINITIONS
 //*****************************************************************************
-static void SlaveIntHandler()
-{
-    unsigned long ulRecvData;
+static void GPIOA1IntHandler(void) { // ############################
     unsigned long ulStatus;
 
-    ulStatus = MAP_SPIIntStatus(GSPI_BASE,true);
+    lastValue = value;
+    value = SysTickValueGet();
+    diff = (lastValue - value)/80000;
 
-    MAP_SPIIntClear(GSPI_BASE,SPI_INT_RX_FULL|SPI_INT_TX_EMPTY);
-
-    if(ulStatus & SPI_INT_TX_EMPTY)
-    {
-        MAP_SPIDataPut(GSPI_BASE,g_ucTxBuff[ucTxBuffNdx%TR_BUFF_SIZE]);
-        ucTxBuffNdx++;
+// passFlag might be used here for long press
+    if(diff > 10){
+        count = 0;
+        readFlag = 1;
+        Report("Ready to read the new input ...\r\n");
+        SysTickPeriodSet(16777216);
+        SysTickEnable();
+    }
+    else{
+        if(count == 0){ // double check
+            diff = 1;
+            cmp += diff;
+            cmp <<= 2;
+        }
+        else if(diff > 1){
+            diff = 1; //can be deleted
+            cmp += diff;
+            cmp <<= 1;
+        }
+        else{
+            diff = 0; //can be deleted
+            cmp <<= 1;
+        }
+        Report("#%d -> VALUE = %d\r\n", count, diff);
+        count++;
     }
 
-    if(ulStatus & SPI_INT_RX_FULL)
-    {
-        MAP_SPIDataGetNonBlocking(GSPI_BASE,&ulRecvData);
-        g_ucTxBuff[ucRxBuffNdx%TR_BUFF_SIZE] = ulRecvData;
-        Report("%c",ulRecvData);
-        ucRxBuffNdx++;
-    }
+    ulStatus = MAP_GPIOIntStatus(GPIOA1_BASE, true);
+    MAP_GPIOIntClear(GPIOA1_BASE, ulStatus);        // clear interrupts on GPIOA1
 }
 
 //*****************************************************************************
 //
-//! SPI Master mode main loop
-//!
-//! This function configures SPI modelue as master and enables the channel for
-//! communication
-//!
-//! \return None.
+//check input character
 //
 //*****************************************************************************
-void MasterMain()
-{
+static char
+checkChar(void) {
+        switch(cmp){
+            case Button0:
+                if(i != 0) {confirmFlag = 1;}
+                break;
+            case Button1:
+                if(i != 1) {confirmFlag = 1;}
+                else if(i = 0 && j < 3) {j++;}
+                break;
+            case Button2:
+                if(i != 2) {confirmFlag = 1;}
+                else if(i = 0 && j < 3) {j++;}
+                break;
+            case Button3:
+                if(i != 3) {confirmFlag = 1;}
+                else if(i = 0 && j < 3) {j++;}
+                break;
+            case Button4:
+                if(i != 4) {confirmFlag = 1;}
+                else if(i = 0 && j < 3) {j++;}
+                break;
+            case Button5:
+                if(i != 5) {confirmFlag = 1;}
+                else if(i = 0 && j < 3) {j++;}
+                break;
+            case Button6:
+                if(i != 6) {confirmFlag = 1;}
+                else if(i = 0 && j < 3) {j++;}
+                break;
+            case Button7:
+                if(i != 7) {confirmFlag = 1;}
+                else if(i = 0 && j < 4) {j++;}
+                break;
+            case Button8:
+                if(i != 8) {confirmFlag = 1;}
+                else if(i = 0 && j < 3) {j++;}
+                break;
+            case Button9:
+                if(i != 9) {confirmFlag = 1;}
+                else if(i = 0 && j < 4) {j++;}
+                break;
+            case LAST:
+                if(i != 10) {confirmFlag = 1;}
+                break;
+            case MUTE:
+                if(i != 11) {confirmFlag = 1;}
+                break;
+            default:
+                Report("Not in the target button set.\r\n");
+        }
+        cmp = 0b0;
 
-    unsigned long ulUserData;
-    unsigned long ulDummy;
-
-    //
-    // Initialize the message
-    //
-    memcpy(g_ucTxBuff,MASTER_MSG,sizeof(MASTER_MSG));
-
-    //
-    // Set Tx buffer index
-    //
-    ucTxBuffNdx = 0;
-    ucRxBuffNdx = 0;
-
-    //
-    // Reset SPI
-    //
-    MAP_SPIReset(GSPI_BASE);
-
-    //
-    // Configure SPI interface
-    //
-    MAP_SPIConfigSetExpClk(GSPI_BASE,MAP_PRCMPeripheralClockGet(PRCM_GSPI),
-                     SPI_IF_BIT_RATE,SPI_MODE_MASTER,SPI_SUB_MODE_0,
-                     (SPI_SW_CTRL_CS |
-                     SPI_4PIN_MODE |
-                     SPI_TURBO_OFF |
-                     SPI_CS_ACTIVEHIGH |
-                     SPI_WL_8));
-
-    //
-    // Enable SPI for communication
-    //
-    MAP_SPIEnable(GSPI_BASE);
-
-    //
-    // Print mode on uart
-    //
-    Message("Enabled SPI Interface in Master Mode\n\r");
-
-    //
-    // User input
-    //
-    Report("Press any key to transmit data....");
-
-    //
-    // Read a character from UART terminal
-    //
-    ulUserData = MAP_UARTCharGet(UARTA0_BASE);
-
-
-    //
-    // Send the string to slave. Chip Select(CS) needs to be
-    // asserted at start of transfer and deasserted at the end.
-    //
-    MAP_SPITransfer(GSPI_BASE,g_ucTxBuff,g_ucRxBuff,50,
-            SPI_CS_ENABLE|SPI_CS_DISABLE);
-
-    //
-    // Report to the user
-    //
-    Report("\n\rSend      %s",g_ucTxBuff);
-    Report("Received  %s",g_ucRxBuff);
-
-    //
-    // Print a message
-    //
-    Report("\n\rType here (Press enter to exit) :");
-
-    //
-    // Initialize variable
-    //
-    ulUserData = 0;
-
-    //
-    // Enable Chip select
-    //
-    MAP_SPICSEnable(GSPI_BASE);
-
-    //
-    // Loop until user "Enter Key" is
-    // pressed
-    //
-    while(ulUserData != '\r')
-    {
-        //
-        // Read a character from UART terminal
-        //
-        ulUserData = MAP_UARTCharGet(UARTA0_BASE);
-
-        //
-        // Echo it back
-        //
-        MAP_UARTCharPut(UARTA0_BASE,ulUserData);
-
-        //
-        // Push the character over SPI
-        //
-        MAP_SPIDataPut(GSPI_BASE,ulUserData);
-
-        //
-        // Clean up the receive register into a dummy
-        // variable
-        //
-        MAP_SPIDataGet(GSPI_BASE,&ulDummy);
-    }
-
-    //
-    // Disable chip select
-    //
-    MAP_SPICSDisable(GSPI_BASE);
-}
-
-//*****************************************************************************
-//
-//! SPI Slave mode main loop
-//!
-//! This function configures SPI modelue as slave and enables the channel for
-//! communication
-//!
-//! \return None.
-//
-//*****************************************************************************
-void SlaveMain()
-{
-    //
-    // Initialize the message
-    //
-    memcpy(g_ucTxBuff,SLAVE_MSG,sizeof(SLAVE_MSG));
-
-    //
-    // Set Tx buffer index
-    //
-    ucTxBuffNdx = 0;
-    ucRxBuffNdx = 0;
-
-    //
-    // Reset SPI
-    //
-    MAP_SPIReset(GSPI_BASE);
-
-    //
-    // Configure SPI interface
-    //
-    MAP_SPIConfigSetExpClk(GSPI_BASE,MAP_PRCMPeripheralClockGet(PRCM_GSPI),
-                     SPI_IF_BIT_RATE,SPI_MODE_SLAVE,SPI_SUB_MODE_0,
-                     (SPI_HW_CTRL_CS |
-                     SPI_4PIN_MODE |
-                     SPI_TURBO_OFF |
-                     SPI_CS_ACTIVEHIGH |
-                     SPI_WL_8));
-
-    //
-    // Register Interrupt Handler
-    //
-    MAP_SPIIntRegister(GSPI_BASE,SlaveIntHandler);
-
-    //
-    // Enable Interrupts
-    //
-    MAP_SPIIntEnable(GSPI_BASE,SPI_INT_RX_FULL|SPI_INT_TX_EMPTY);
-
-    //
-    // Enable SPI for communication
-    //
-    MAP_SPIEnable(GSPI_BASE);
-
-    //
-    // Print mode on uart
-    //
-    Message("Enabled SPI Interface in Slave Mode\n\rReceived : ");
+        return checkList[i][j];
 }
 
 //*****************************************************************************
@@ -354,21 +209,9 @@ void SlaveMain()
 //
 //*****************************************************************************
 static void
-BoardInit(void)
-{
-/* In case of TI-RTOS vector table is initialize by OS itself */
-#ifndef USE_TIRTOS
-  //
-  // Set vector table base
-  //
-#if defined(ccs)
+BoardInit(void) {
     MAP_IntVTableBaseSet((unsigned long)&g_pfnVectors[0]);
-#endif
-#if defined(ewarm)
-    MAP_IntVTableBaseSet((unsigned long)&__vector_table);
-#endif
-#endif
-    //
+
     // Enable Processor
     //
     MAP_IntMasterEnable();
@@ -376,121 +219,89 @@ BoardInit(void)
 
     PRCMCC3200MCUInit();
 }
-
-//*****************************************************************************
+//****************************************************************************
 //
-//! Main function for spi demo application
+//! Main function
 //!
 //! \param none
 //!
+//!
 //! \return None.
 //
-//*****************************************************************************
-void main()
-{
+//****************************************************************************
 
-    // Initialize Board configurations
-    //
+int main() {
+    unsigned long ulStatus;
+    g_ulBase = TIMERA0_BASE;
+
     BoardInit();
 
-    //
-    // Muxing UART and SPI lines.
-    //
     PinMuxConfig();
+
     InitTerm();
-    //
-    // Enable the SPI module clock
-    //
-    MAP_PRCMPeripheralClkEnable(PRCM_GSPI,PRCM_RUN_MODE_CLK);
+
+    ClearTerm();
 
     //
-    // Initialising the Terminal.
+    // Register the interrupt handlers
     //
-    //InitTerm();
+    MAP_GPIOIntRegister(GPIOA1_BASE, GPIOA1IntHandler); // ############################
 
     //
-    // Clearing the Terminal.
+    // Configure rising edge interrupts on GPIO
     //
-    //ClearTerm();
-
-    //
-    // Display the Banner
-    //
+    MAP_GPIOIntTypeSet(GPIOA1_BASE, 0x40, GPIO_RISING_EDGE);    // GPIO - output, GPIO_RISING_EDGE or GPIO_BOTH_EDGES
 
 
-    //
-    // Reset the peripheral
-    //
-    MAP_PRCMPeripheralReset(PRCM_GSPI);
-
-    //
-    // Reset SPI
-    //
-    MAP_SPIReset(GSPI_BASE);
-
-    //
-    // Configure SPI interface
-    //
-    MAP_SPIConfigSetExpClk(GSPI_BASE,MAP_PRCMPeripheralClockGet(PRCM_GSPI),
-                     SPI_IF_BIT_RATE,SPI_MODE_MASTER,SPI_SUB_MODE_0,
-                     (SPI_SW_CTRL_CS |
-                     SPI_4PIN_MODE |
-                     SPI_TURBO_OFF |
-                     SPI_CS_ACTIVEHIGH |
-                     SPI_WL_8));
-
-    //
-    // Enable SPI for communication
-    //
-    MAP_SPIEnable(GSPI_BASE);
-
-    Adafruit_Init();
+    ulStatus = MAP_GPIOIntStatus (GPIOA1_BASE, false);
+    MAP_GPIOIntClear(GPIOA1_BASE, ulStatus);            // clear interrupts on GPIOA1
 
 
-	fillScreen(BLACK);
+
+    SysTickPeriodSet(16777216);
+    //Timer_IF_Init(PRCM_TIMERA0, g_ulBase, TIMER_CFG_ONE_SHOT_UP, TIMER_A, 0);//ulConfig check
+    SysTickEnable();
 
 
-    while(1)
-    {
- 
-        fillScreen(BLACK);
-        Outstr("Hello World!");
-        MAP_UtilsDelay(1000000);
-        int i = 0;
-        int x = 0;
-        int y = 0;
-        for(i=0; i<1270; i++){
-            drawChar(x, y, font[i], RED, WHITE, 1);
-            x+=8;
-            if(x > 127){
-                x = 0;
-                y+=8;
-                if(y > 127){
-                    y = 0;
-                }
-            }
 
-            MAP_UtilsDelay(1000000);
-        }
-        lcdTestPattern();
-        MAP_UtilsDelay(1000000);
-        lcdTestPattern2();
-        MAP_UtilsDelay(1000000);
-        testlines(YELLOW);
-        MAP_UtilsDelay(1000000);
-        testfastlines(WHITE, CYAN);
-        MAP_UtilsDelay(1000000);
-        testdrawrects(BLUE);
-        MAP_UtilsDelay(1000000);
-        testfillrects(GREEN);
-        MAP_UtilsDelay(1000000);
-        testfillcircles('20', RED);
-        MAP_UtilsDelay(1000000);
-        testroundrects();
-        MAP_UtilsDelay(1000000);
-        testtriangles();
-        MAP_UtilsDelay(1000000);
+
+    // clear global variables
+    cmp = 0b0;
+    i = 0;
+    j = 0;
+    count = 0;
+    value = 0;
+    passFlag = 0;
+    confirmFlag = 0;
+    readFlag = 0;
+    startTimer = 1;
+
+    // Enable GPIO interrupts
+    MAP_GPIOIntEnable(GPIOA1_BASE, 0x40);
+
+
+    Message("\t\t****************************************************\n\r");
+    Message("\t\t\t GPIO Interrupt Successfully Set Up \n\r");
+    Message("\t\t ****************************************************\n\r");
+
+
+
+    Message("\t\t****************************************************\n\r");
+    Message("\t\t\t IR Remote TX/RX Application Start \n\r");
+    Message("\t\t ****************************************************\n\r");
+    Message("\n\n\n\r");
+    Report("count = %d\r\n",count);
+
+    while (1) {
+
+
+        //MAP_UtilsDelay(80000000/5);
     }
-
 }
 
+//*****************************************************************************
+//
+// Close the Doxygen group.
+//! @}
+//
+//*****************************************************************************
